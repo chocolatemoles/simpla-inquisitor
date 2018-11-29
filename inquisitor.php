@@ -8,7 +8,8 @@
 			function action()
 			{
 				$action = $this->request->post('action');
-				
+				$fix 	= $this->request->post('fix');
+
 				switch($action)
 				{
 					// Images
@@ -30,7 +31,12 @@
 
 						$lostOriginals = array();
 						foreach(array_diff($originals, $db_images) as $filename)
-							$lostOriginals[] = $filename;
+						{
+							if($fix == 'true')
+								unlink(__DIR__ . '/files/originals/' . $filename);
+							else
+								$lostOriginals[] = $filename;
+						}
 				
 						// Resized images
 						$resizes = array();
@@ -49,7 +55,12 @@
 						
 						$lostResizes = array();
 						foreach(array_diff(array_keys($resizes), $db_images) as $filename)
-							$lostResizes[] = $resizes[$filename];
+						{
+							if($fix == 'true')
+								unlink(__DIR__ . '/files/products/' . $resizes[$filename]);
+							else
+								$lostResizes[] = $resizes[$filename];
+						}
 
 						// Output
 						$output = array(
@@ -64,10 +75,16 @@
 						$emptyNames = $this->checkEmpty('products', 'name');
 
 						// Empty urls
-						$emptyUrls = $this->checkEmpty('products', 'url');
+						if($fix == 'true')
+							$emptyUrls = $this->fixEmptyUrl('products');
+						else
+							$emptyUrls = $this->checkEmpty('products', 'url');
 	
 						// Urls has match
-						$urlsMatch = $this->checkMatch('products', 'url');
+						if($fix == 'true')
+							$urlsMatch = $this->fixMatchUrl('products');
+						else
+							$urlsMatch = $this->checkMatch('products', 'url');
 
 						// Lost images
 						$this->db->query('SELECT product_id, filename FROM __images');
@@ -87,9 +104,18 @@
 						foreach($this->db->results() as $result)
 						{
 							if(!isset($images[$result->filename]))
-								$lostImages[] = $result->product_id;
+							{
+								if($fix == 'true')
+								{
+									$query = $this->db->placehold('DELETE FROM __images WHERE product_id = ? AND filename = ?', $result->product_id, $result->filename);
+									$this->db->query($query);
+								}
+								else
+								{
+									$lostImages[] = $result->product_id;
+								}
+							}
 						}
-							
 						
 						// Output
 						$output = array(
@@ -108,10 +134,16 @@
 						$emptyNames = $this->checkEmpty($action, $action == 'pages' ? 'header' : 'name');
 
 						// Empty urls
-						$emptyUrls = $this->checkEmpty($action, 'url');
+						if($fix == 'true' && $action != 'pages')
+							$emptyUrls = $this->fixEmptyUrl($action);
+						else
+							$emptyUrls = $this->checkEmpty($action, 'url');
 	
 						// Urls has match
-						$urlsMatch = $this->checkMatch($action, 'url');
+						if($fix == 'true' && $action != 'pages')
+							$urlsMatch = $this->fixMatchUrl($action);
+						else
+							$urlsMatch = $this->checkMatch($action, 'url');
 						
 						// Output
 						$output = array(
@@ -136,19 +168,97 @@
 				$emptyValues = array();
 				foreach($this->db->results('id') as $id)
 					$emptyValues[] = $id;
-							
+
 				return $emptyValues;
 			}
 
 			function checkMatch($table, $value)
 			{
-				$this->db->query("SELECT id FROM __$table p INNER JOIN (SELECT $value FROM __$table WHERE $value != '' GROUP BY $value HAVING COUNT(id) > 1) d ON p.$value = d.$value");
+				$this->db->query("SELECT p.id FROM __$table p INNER JOIN (SELECT $value FROM __$table WHERE $value != '' GROUP BY $value HAVING COUNT(id) > 1) d ON p.$value = d.$value");
 				
 				$matchValues = array();
 				foreach($this->db->results('id') as $id)
 					$matchValues[] = $id;
 					
 				return $matchValues;
+			}
+			
+			function fixEmptyUrl($table)
+			{
+				$this->db->query("SELECT id, name FROM __$table WHERE url = ''");
+
+				$results = array();
+				foreach($this->db->results() as $result)
+				{
+					$url = $this->generateUrl($result->name);
+					
+					if(!empty($url))
+					{
+						$query = $this->db->placehold("UPDATE __$table SET url = '$url' WHERE id = ?", $result->id);
+						$this->db->query($query);
+					}
+					else
+					{
+						$results[] = $result->id;
+					}
+				}
+
+				return $results;
+			}
+			
+			function fixMatchUrl($table)
+			{
+				$this->db->query("SELECT DISTINCT url FROM __$table");
+				$existUrls = $this->db->results('url');
+				$first = array();
+				
+				$this->db->query("SELECT t.id, t.url FROM __$table t INNER JOIN (SELECT url FROM __$table WHERE url != '' GROUP BY url HAVING COUNT(id) > 1) c ON t.url = c.url");
+
+				foreach($this->db->results() as $result)
+				{
+					if(!isset($first[$result->url]))
+					{
+						$first[$result->url] = $result->url;
+						continue;
+					}
+
+					$url = $result->url;
+					$originalUrl = $url;
+					$num = 1;
+					
+					while(in_array($url, $existUrls))
+					{           
+						$url = $originalUrl . '-' . $num;
+						$num++;
+					}
+
+					$query = $this->db->placehold("UPDATE __$table SET url = '$url' WHERE id = ?", $result->id);
+					$this->db->query($query);
+					
+					$existUrls[] = $url;
+				}
+				
+				return array();
+			}
+			
+			function generateUrl($name)
+			{
+				$translit = array(
+					'А'=>'a', 'а'=>'a', 'Б'=>'b', 'б'=>'b', 'В'=>'v', 'в'=>'v', 'Ґ'=>'g', 'ґ'=>'g', 'Г'=>'g', 'г'=>'g', 
+					'Д'=>'d', 'д'=>'d', 'Е'=>'e', 'е'=>'e', 'Ё'=>'e', 'ё'=>'e', 'Є'=>'e', 'є'=>'e', 'Ж'=>'d', 'ж'=>'d',
+					'З'=>'z', 'з'=>'z', 'И'=>'i', 'и'=>'i', 'І'=>'i', 'і'=>'i', 'Ї'=>'i', 'ї'=>'i', 'Й'=>'i', 'й'=>'i',
+					'К'=>'k', 'к'=>'k', 'Л'=>'l', 'л'=>'l', 'М'=>'m', 'м'=>'m', 'Н'=>'n', 'н'=>'n', 'О'=>'o', 'о'=>'o',
+					'П'=>'p', 'п'=>'p', 'Р'=>'r', 'р'=>'r', 'С'=>'s', 'с'=>'s', 'Т'=>'t', 'т'=>'t', 'У'=>'u', 'у'=>'u',
+					'Ф'=>'f', 'ф'=>'f', 'Х'=>'h', 'х'=>'h', 'Ц'=>'ts', 'ц'=>'ts', 'Ч'=>'ch', 'ч'=>'ch', 'Ш'=>'sh', 'ш'=>'sh',
+					'Щ'=>'sch', 'щ'=>'sch', 'Ъ'=>'-', 'ъ'=>'-', 'Ы'=>'y', 'ы'=>'y', 'Ь'=>'-', 'ь'=>'-', 'Э'=>'e', 'э'=>'e',
+					'Ю'=>'yu', 'ю'=>'yu', 'Я'=>'ya', 'я'=>'ya', ' '=>'-'
+				);
+				
+				$url = strtr($name, $translit);
+				$url = trim(preg_replace('/[^a-z0-9-]+/', '-', $url), " _-");
+				$url = preg_replace('/\-+/', '-', $url);
+				
+				return $url;
 			}
 			
 			function output($output)
@@ -180,7 +290,7 @@
 			max-width: 600px;
 			margin: 25px auto;
 		}
-		body.loading:after {
+		.container.loading:after {
 			content: '';
 			display: inline-block;
 			width: 12px;
@@ -226,13 +336,38 @@
 			color: #8ec5ef;
 			text-decoration: none;
 		}
+		.btn-fix-errors{
+			background: linear-gradient(to bottom, #FF5722, #E91E63);
+			display: block;
+			padding: 10px;
+			margin: 15px 0;
+			text-align: center;
+			color: #fff;
+			border-radius: 5px;
+			width: 100%;
+			border: none;
+			cursor: pointer;
+			outline: none
+		}
+		.message-fix-errors{
+			width: 100%;
+			background: rgba(156, 39, 176, 0.25);
+			padding: 15px;
+			border-radius: 5px;
+			box-sizing: border-box;
+			text-align: center;
+			margin: 15px 0;
+			border: 2px solid #9C27B0;
+		}
 	</style>
 </head>
-<body class="loading">
+<body>
+	<div class="container loading"></div>
+	
 	<script type="text/javascript">
 		'use strict';
 		
-		var $body = document.querySelector('body'),
+		var $container = document.querySelector('.container'),
 			steps = [
 				{'images': 		'Изображения'},
 				{'products': 	'Товары'},
@@ -242,16 +377,20 @@
 				{'blog': 		'Блог'}
 			],
 			step = 0,
-			xhr = new XMLHttpRequest();
-			
+			xhr = new XMLHttpRequest(),
+			hasErrors = false,
+			fixIt = false;
+
 		function inspect()
 		{
+			$container.classList.add('loading');
+			
 			// Print title
 			var $title = document.createElement('p');
 				$title.className = 'title';
 				$title.innerText = Object.values(steps[step])[0];
 				
-			$body.append($title);
+			$container.append($title);
 			
 			// Send request
 			xhr.open('POST', window.location.pathname, true);
@@ -270,14 +409,46 @@
 							inspect();
 						}
 						else
-							$body.removeAttribute('class');
+						{
+							$container.classList.remove('loading');
+							
+							if(hasErrors)
+							{
+								if(fixIt)
+								{
+									var $message = document.createElement('p');
+										$message.className = 'message-fix-errors';
+										$message.innerText = 'Оставшиеся ошибки нужно исправить вручную';
+										
+									$container.append($message);
+								}
+								else
+								{
+									var $button = document.createElement('button');
+										$button.className = 'btn-fix-errors';
+										$button.innerText = 'Исправить ошибки';
+										
+									$container.append($button);
+									
+									$button.addEventListener('click', function(e){
+										e.preventDefault();
+										fixIt = true;
+										step = 0;
+										
+										$container.innerHTML = '';
+										
+										inspect();
+									}, false);
+								}
+							}
+						}
 					}
 					else
 						alert(xhr.status + ': ' + xhr.statusText);
 			}
 
 			setTimeout(function(){
-				xhr.send('action=' + Object.keys(steps[step++])[0]);
+				xhr.send('action=' + Object.keys(steps[step++])[0] + '&fix=' + fixIt);
 			}, 500); // For print effect
 		}
 		
@@ -390,7 +561,7 @@
 						$subtitle.className = 'subtitle';
 						$subtitle.innerText = index;
 						
-					$body.append($subtitle);
+					$container.append($subtitle);
 					
 					results[index].forEach(function(el){
 						var $line = document.createElement('p');
@@ -410,9 +581,11 @@
 							$line.append($link);
 						}
 						
-						$body.append($line);
+						$container.append($line);
 					})
 				}
+				
+				hasErrors = true;
 			}
 			else
 			{
@@ -421,7 +594,7 @@
 					$noErrors.className = 'no-errors';
 					$noErrors.innerText = 'Нет ошибок';
 				
-				$body.append($noErrors);
+				$container.append($noErrors);
 			}
 		}
 		
