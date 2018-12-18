@@ -433,7 +433,7 @@
 									$button.addEventListener('click', function(e){
 										e.preventDefault();
 										fixIt = true;
-										hasErrors = false,
+										hasErrors = false;
 										step = 0;
 										
 										$container.innerHTML = '';
